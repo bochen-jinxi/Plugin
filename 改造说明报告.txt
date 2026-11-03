@@ -1,0 +1,219 @@
+================================================================================
+改造说明报告
+基于"硬编码改造分析报告.txt"第 5 节指出的 6 个设计瑕疵进行的实际改造
+================================================================================
+
+改造时间：2026-11-03
+改造者：华为云码道（CodeArts）代码智能体
+改造对象：d:\ThirdParty\PluginDemo 项目
+
+--------------------------------------------------------------------------------
+【0】改造依据与范围
+--------------------------------------------------------------------------------
+
+0.1 依据
+    本改造直接依据上一轮分析报告《硬编码改造分析报告.txt》第 5 节"现存项目
+    中的设计瑕疵"中诚实指出的 6 个问题。用户指令"你改造下"未指明方向，结合
+    上下文，最合理的改造方向就是修复这些已识别的瑕疵。
+
+0.2 范围
+    共修复 5 个瑕疵（5.2 / 5.3 / 5.4 / 5.5 / 5.6），其中 5.1 经复核确认是
+    正确设计（依赖 is 多态性，可读性可通过注释改善，已在策略类上补充注释），
+    不算瑕疵，故未单独修改。具体见下文每项的说明。
+
+0.3 不做的事
+    - 不重构整体架构（架构本身是正确的）；
+    - 不引入新功能；
+    - 不删除现有接口/类；
+    - 不改变对外行为（Program.cs 入口与 PluginHost 启动流程不变）。
+
+--------------------------------------------------------------------------------
+【1】瑕疵 5.6 修复：升级 TargetFramework 到 net8.0
+--------------------------------------------------------------------------------
+
+文件：PluginDemo.csproj
+变更：
+    - <TargetFramework>netcoreapp3.1</TargetFramework>
+      -> <TargetFramework>net8.0</TargetFramework>
+    - <PackageReference Include="Microsoft.Extensions.Hosting" Version="3.1.32"
+      -> Version="8.0.0"
+原因：netcoreapp3.1 已于 2022-12 结束支持，不再接收安全更新。net8.0 是
+    当前 LTS 版本。
+影响：消除 NETSDK1138 EOL 警告；输出目录由 bin\Debug\netcoreapp3.1 变为
+    bin\Debug\net8.0。
+
+--------------------------------------------------------------------------------
+【2】瑕疵 5.5 修复：清理 csproj 残留的无效 Compile Remove 条目
+--------------------------------------------------------------------------------
+
+文件：PluginDemo.csproj
+变更：删除全部 16 行 <Compile Remove="XXX\**" /> 条目，包括：
+    Step2Demo / Step2.1Demo / Step2.2Demo / Step2.3Demo / Step2.4Demo /
+    Step2.5Demo / Step2.6Demo / GenericDictionaryDemo / TypeDictionaryDemo /
+    GenericInterfaceVsClassDemo / GenericVsNonGenericInterfaceDemo /
+    GenericTypeSafetyDemo / DecoratorProxyAdapterDemo /
+    ContravarianceMethodParamDemo / ContractOverImplementationDemo /
+    InterfaceOverDesignDemo
+原因：这些目录在磁盘上已不存在，是教学演进过程的历史包袱，保留无害但
+    降低 csproj 整洁度。
+影响：无功能影响，csproj 从 33 行缩减到 13 行。
+
+--------------------------------------------------------------------------------
+【3】瑕疵 5.2 修复：泛型委托字段改为 readonly + 构造函数注入
+--------------------------------------------------------------------------------
+
+3.1 PluginBase<TContext>
+    文件：Plugins\PluginBase{TContext}.cs
+    变更：
+        - protected Func<TContext, string> DescribeFunc;
+          -> private readonly Func<TContext, string> _describeFunc;
+        - 新增 protected 构造函数 PluginBase(Func<TContext, string> describeFunc)，
+          对 null 抛 ArgumentNullException，否则赋值给 _describeFunc；
+        - Initialize 中 DescribeFunc(context) 改为 _describeFunc(context)。
+    效果：描述函数在构造时一次性注入，运行期不可变，子类无法在普通方法中
+    误改它，保证策略不变性。
+
+3.2 GenericPlugin<TContext>
+    文件：Plugins\GenericPlugin.cs
+    变更：
+        - 删除 public GenericPlugin() { DescribeFunc = ctx => ...; }
+        - 改为 public GenericPlugin() : base(ctx => $"BaseTag: {ctx.BaseTag}") { }
+    效果：通过基类构造函数参数注入 lambda，语义更直接。
+
+3.3 PluginContextStrategyBase<TPlugin>
+    文件：Hosting\Strategies\PluginContextStrategyBase{TPlugin}.cs
+    变更：
+        - protected Func<TPlugin, IServiceProvider, IPluginConfig, IPluginContext> CreateContextCoreFunc;
+          -> private readonly Func<...> _createContextCore;
+        - 新增 protected 构造函数接收 createContextCore，null 校验后赋值；
+        - CreateContext / CreateContext(TPlugin) 内部 CreateContextCoreFunc(...)
+          改为 _createContextCore(...)。
+    效果：上下文构造函数在构造时一次性注入，运行期不可变。
+
+3.4 GenericPluginContextStrategy
+    文件：Hosting\Strategies\GenericPluginContextStrategy.cs
+    变更：
+        - public GenericPluginContextStrategy() { CreateContextCoreFunc = ...; }
+          -> public GenericPluginContextStrategy() : base((plugin, services, config) => ...) { }
+        - 补充类注释说明匹配 GenericPlugin<BasePluginContext> 及其派生类。
+
+3.5 SamplePluginContextStrategy
+    文件：Hosting\Strategies\SamplePluginContextStrategy.cs
+    变更：
+        - 原构造函数体内赋值 CreateContextCoreFunc 并捕获 _env 字段；
+        - 改为通过 base(...) 注入 lambda，在 lambda 内直接用 env.EnvironmentName
+          （env 在构造函数参数作用域内可见）；
+        - 保留 env 的 null 校验（在构造函数体内 _ = env ?? throw ...）；
+        - 补充类注释说明匹配 GenericPlugin<SamplePluginContext> 及其派生类
+          （如 SamplePlugin）。
+    效果：消除 _env 字段，env 仅用于构造期读取环境名，策略对象本身更不可变。
+
+--------------------------------------------------------------------------------
+【4】瑕疵 5.3 修复：BasePluginContext 配置降级逻辑加注释
+--------------------------------------------------------------------------------
+
+文件：Abstractions\BasePluginContext.cs
+变更：在 _config = config as PluginConfig ?? new PluginConfig(...) 这一行前
+    补充注释，明确说明：
+    - 基类只关心基类配置 PluginConfig；
+    - 当传入派生配置（如 SamplePluginConfig）时 as 会成功，派生专属字段
+      （如 Environment）不会在基类层面可见，这是有意为之；
+    - 当传入的不是 PluginConfig 体系时，回退到等价的 PluginConfig。
+原因：原代码静默降级，缺少注释容易让人误读为 bug。
+影响：无功能变化，仅增加 4 行注释。
+
+--------------------------------------------------------------------------------
+【5】瑕疵 5.4 修复：PluginHost 策略匹配语义改为"首个命中"
+--------------------------------------------------------------------------------
+
+文件：Hosting\PluginHost.cs
+变更：
+    - 删除 applied 计数器与 foreach 遍历所有匹配策略的循环；
+    - 改为 var strategy = _strategies.FirstOrDefault(s => s.CanHandle(plugin));
+    - 若 strategy is null，输出 LogWarning "Plugin {Name} has no matching
+      strategy. Skipped." 并 return；
+    - 否则构造 context、plugin.Initialize(context)，并输出 LogInformation
+      "Plugin {Name} started with strategy {Strategy}."（含策略类型名）。
+原因：原代码一个插件可能匹配多个策略，导致 Initialize 被多次调用（虽然幂等
+    只第一次生效），日志说"N context(s)"与实际"只有第一个生效"语义不一致。
+    改为"首个命中"后，语义清晰：一个插件对应一个策略，多匹配视为配置错误
+    应在 DI 注册期避免。
+影响：
+    - 行为变化：原代码若多策略匹配会多次调用 Initialize（第二次被幂等跳过），
+      现在只调用一次。对当前 DI 注册（每个插件只有一个匹配策略）行为完全一致；
+    - 日志变化：从"started with N context(s)"变为"started with strategy
+      {Strategy}"，更准确；
+    - 新增"无匹配策略"的 warning，原代码会静默跳过（applied=0，日志说"0
+      context(s)"），现在显式告警。
+
+--------------------------------------------------------------------------------
+【6】瑕疵 5.1 复核：未修改
+--------------------------------------------------------------------------------
+
+原报告 5.1 指出 SamplePluginContextStrategy 的泛型参数是
+GenericPlugin<SamplePluginContext>，而 SamplePlugin 继承
+GenericPlugin<SamplePluginContext>，CanHandle 用 is 判定能匹配。
+经复核：这是正确的设计——策略匹配的是"能处理该插件类型的策略"，依赖 is
+的多态性是预期行为。原报告也承认"这一点是通的"。本次改造在两个策略类上
+补充了类注释说明匹配关系，可读性问题已解决，无需结构修改。故 5.1 不单独
+列为修改项。
+
+--------------------------------------------------------------------------------
+【7】验证结果
+--------------------------------------------------------------------------------
+
+7.1 编译
+    dotnet build -> Build succeeded. 0 Error(s), 6 Warning(s)。
+    6 个 warning 全部是 NuGet HTTP 源告警（NU1803），与代码改造无关，
+    属于环境配置问题，不在本次改造范围。
+
+7.2 运行
+    dotnet run 输出（过滤后）：
+        info: PluginDemo.Plugins.GenericPlugin[0]
+              GenericPlugin initializing. NewConfig: GenericPlugin v1.0.0, BaseTag: Base-tag-for-GenericPlugin
+        info: PluginDemo.Hosting.PluginHost[0]
+              Plugin GenericPlugin started with strategy GenericPluginContextStrategy.
+        info: PluginDemo.Plugins.SamplePlugin[0]
+              SamplePlugin initializing. NewConfig: SamplePlugin v1.0.0, BaseTag: Sample-tag-for-SamplePlugin
+        info: PluginDemo.Hosting.PluginHost[0]
+              Plugin SamplePlugin started with strategy SamplePluginContextStrategy.
+        info: Microsoft.Hosting.Lifetime[0]
+              Application started. Press Ctrl+C to shut down.
+        info: Microsoft.Hosting.Lifetime[0]
+              Hosting environment: Development
+    两个插件均正常初始化，分别由对应策略处理，日志格式已更新为新版。
+    行为与改造前一致（因为当前 DI 注册下每个插件本来就只有一个匹配策略）。
+
+--------------------------------------------------------------------------------
+【8】改造前后文件清单对比
+--------------------------------------------------------------------------------
+
+文件                                              | 改造内容
+--------------------------------------------------+---------------------------------
+PluginDemo.csproj                                 | 升级 net8.0 + 清理 16 行残留
+Plugins\PluginBase{TContext}.cs                   | DescribeFunc -> readonly + 构造注入
+Plugins\GenericPlugin.cs                          | 改用基类构造注入 lambda
+Hosting\Strategies\PluginContextStrategyBase{TPlugin}.cs | CreateContextCoreFunc -> readonly + 构造注入
+Hosting\Strategies\GenericPluginContextStrategy.cs       | 改用基类构造注入 + 加类注释
+Hosting\Strategies\SamplePluginContextStrategy.cs        | 改用基类构造注入 + 消除 _env 字段 + 加类注释
+Abstractions\BasePluginContext.cs                 | 配置降级逻辑加注释
+Hosting\PluginHost.cs                             | 策略匹配改为 FirstOrDefault + 日志改写
+Program.cs                                        | 未修改
+Abstractions\IPlugin.cs 等 8 个接口/Config 文件   | 未修改
+Plugins\SamplePlugin.cs                           | 未修改
+Hosting\DefaultPluginConfigFactory.cs             | 未修改
+
+--------------------------------------------------------------------------------
+【9】改造未引入新文件、未删除现有文件
+--------------------------------------------------------------------------------
+
+本次改造仅对现有文件进行 in-place 编辑（Write 覆盖），未新增源代码文件，
+未删除任何源代码文件。符合"避免过度工程、只做必要修改"的原则。
+
+--------------------------------------------------------------------------------
+【10】结束
+--------------------------------------------------------------------------------
+本次改造完成。所有修改均通过编译与运行验证，行为与改造前等价（在当前 DI
+注册下），代码不变性、可读性、可维护性均有提升。如需进一步调整或扩展，
+请明确指示。
+================================================================================

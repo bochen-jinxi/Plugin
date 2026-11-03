@@ -1,0 +1,35 @@
+## .NET build output
+bin/
+obj/
+
+## Visual Studio / VS Code / Rider / CodeArts 临时目录
+.vs/
+.vscode/
+.idea/
+.codeartsdoer/
+
+## 用户特定文件
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## NuGet
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+
+## 项目锁文件
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## 日志
+*.log
+
+## 临时文件
+*~
+*.tmp
+*.bak
+*.cache
